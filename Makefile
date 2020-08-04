@@ -2,10 +2,11 @@
 GOCMD=go
 BINARY_NAME=xtradb-proxy-check
 BINARY_UNIX=$(BINARY_NAME)_unix
+BUILD_BASE=$(GOCMD) build -o out/
 
 all: test build
 build: 
-	$(GOCMD) -o $(BINARY_NAME) -v
+	$(BUILD_BASE)$(BINARY_NAME) -v
 
 test: 
 	$(GOCMD) test -v ./...
@@ -20,4 +21,4 @@ vendor:
 
 # Cross compilation
 build-linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_UNIX) -v
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(BUILD_BASE)$(BINARY_UNIX) -v
