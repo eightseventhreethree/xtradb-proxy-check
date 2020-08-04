@@ -1,15 +1,17 @@
 package main
 
 import (
-	"log"
-
 	api "gclustercheck/pkg/api"
+	"log"
 
 	air "github.com/aofei/air"
 )
 
 func main() {
-	log.Println("Hello Log")
+	log.Println("Started xtradb-proxy-check")
 	api.Init()
-	air.Default.Serve()
+	err := air.Default.Serve()
+	if err != nil {
+		log.Panicln("Failed to start!", err)
+	}
 }
