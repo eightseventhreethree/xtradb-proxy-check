@@ -27,7 +27,6 @@ func sqlClient(env *env.MysqlCfg) (db *sql.DB, err error) {
 }
 
 func sqlPing(sqlX *sql.DB) (bool, error) {
-
 	nodeOffline := true
 	err := sqlX.Ping()
 	if err != nil {

@@ -45,6 +45,5 @@ func clustercheckHandler(req *air.Request, res *air.Response) error {
 	} else {
 		offline(res, responses.Unsynced, fullStatusMsg)
 	}
-
 	return nil
 }
