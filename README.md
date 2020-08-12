@@ -23,7 +23,7 @@ make build
 make run
 ```
 
-## Overrides:
+## Available Overrides:
 ```
 export CLUSTERCHECK_MYSQL_USERNAME='clustercheckuser'
 export CLUSTERCHECK_MYSQL_PASSWORD='clustercheckpassword!'

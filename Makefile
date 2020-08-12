@@ -1,7 +1,7 @@
 # Go parameters
 GOCMD=go
 BINARY_NAME=xtradb-proxy-check
-BINARY_UNIX=$(BINARY_NAME)_unix
+BINARY_LINUX=$(BINARY_NAME)_linux
 BUILD_BASE=$(GOCMD) build -o out/
 
 all: test build
@@ -14,11 +14,13 @@ test:
 clean: 
 	$(GOCMD) clean
 	rm -f $(BINARY_NAME)
-	rm -f $(BINARY_UNIX)
+	rm -f $(BINARY_LINUX)
 
 vendor:
 	$(GOCMD) mod vendor
 
+container: build-linux
+	
 run:
 	$(GOCMD) run main.go
 
