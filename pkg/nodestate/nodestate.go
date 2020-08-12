@@ -3,7 +3,6 @@ package nodestate
 import (
 	"database/sql"
 	"fmt"
-	env "gclustercheck/pkg/env"
 	"log"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -14,11 +13,27 @@ type Status struct {
 	Synced   bool
 	ReadOnly bool
 	Offline  bool
+	Donor    bool
 	Error    string
 }
 
-func sqlClient(env *env.MysqlCfg) (db *sql.DB, err error) {
-	sqlURI := fmt.Sprintf("%s:%s@tcp(%s:%v)/", env.MysqlUsername, env.MysqlPassword, env.MysqlHostname, env.MysqlPort)
+// Cfg info to create Mysql client
+type Cfg struct {
+	MysqlUsername       string
+	MysqlPassword       string
+	MysqlHostname       string
+	MysqlPort           int
+	ReadOnlyIsAvailable bool
+	DonorIsAvailable    bool
+}
+
+// DBClient embeds sql.DB
+type DBClient struct {
+	*sql.DB
+}
+
+func (c *Cfg) sqlClient() (db *sql.DB, err error) {
+	sqlURI := fmt.Sprintf("%s:%s@tcp(%s:%v)/", c.MysqlUsername, c.MysqlPassword, c.MysqlHostname, c.MysqlPort)
 	db, err = sql.Open("mysql", sqlURI)
 	if err != nil {
 		log.Println(err.Error())
@@ -26,9 +41,9 @@ func sqlClient(env *env.MysqlCfg) (db *sql.DB, err error) {
 	return db, err
 }
 
-func sqlPing(sqlX *sql.DB) (bool, error) {
+func (db *DBClient) ping() (bool, error) {
 	nodeOffline := true
-	err := sqlX.Ping()
+	err := db.Ping()
 	if err != nil {
 		err = fmt.Errorf("Failed to ping database %s", err)
 		return nodeOffline, err
@@ -37,8 +52,8 @@ func sqlPing(sqlX *sql.DB) (bool, error) {
 	return nodeOffline, err
 }
 
-func sqlShowStatus(sqlX *sql.DB, sqlStmt string) (string, error) {
-	selectOut, err := sqlX.Query(sqlStmt)
+func (db *DBClient) getVariables(sqlStmt string) (string, error) {
+	selectOut, err := db.Query(sqlStmt)
 	if err != nil {
 		log.Println(err.Error())
 		return "", err
@@ -54,36 +69,56 @@ func sqlShowStatus(sqlX *sql.DB, sqlStmt string) (string, error) {
 	return result, err
 }
 
-func getWsrepLocalState(sqlX *sql.DB) (bool, error) {
+func (db *DBClient) getState(sqlStmt string, matchValue string) (bool, error) {
 	var err error
-	sqlStmt := "SHOW STATUS LIKE '%wsrep_local_state';"
-	result, err := sqlShowStatus(sqlX, sqlStmt)
+	result, err := db.getVariables(sqlStmt)
 	if err != nil {
 		log.Println(err)
 	}
 
-	//fmt.Println("result = ", result)
-	var synced bool = false
+	var currentValueMatches bool = false
 	if result == "" {
 		err := fmt.Errorf("No result returned for: %s", sqlStmt)
-		return synced, err
+		return currentValueMatches, err
 	}
 
-	if result == "4" {
-		synced = true
+	if result == matchValue {
+		currentValueMatches = true
 	}
+	return currentValueMatches, err
+}
+
+func (db *DBClient) isSynced() (bool, error) {
+	sqlStmt := "SHOW STATUS LIKE '%wsrep_local_state';"
+	synced, err := db.getState(sqlStmt, "4")
 	return synced, err
 }
 
+func (db *DBClient) isDonor() (bool, error) {
+	sqlStmt := "SHOW STATUS LIKE '%wsrep_local_state';"
+	donor, err := db.getState(sqlStmt, "2")
+	return donor, err
+}
+
+func (db *DBClient) isReadOnly() (bool, error) {
+	sqlStmt := "SHOW GLOBAL VARIABLES LIKE 'read_only';"
+	readonly, err := db.getState(sqlStmt, "ON")
+	return readonly, err
+}
+
 // Check returns struct of current states of sql
-func Check(env *env.MysqlCfg) (*Status, error) {
-	sqlX, err := sqlClient(env)
-	defer sqlX.Close()
+func (c *Cfg) Check() (*Status, error) {
+	sqlX, err := c.sqlClient()
+	db := DBClient{
+		sqlX,
+	}
+	defer db.Close()
 	// Set default status states
 	status := &Status{
 		Synced:   false,
-		ReadOnly: false,
+		ReadOnly: true,
 		Offline:  true,
+		Donor:    true,
 		Error:    "None",
 	}
 
@@ -94,20 +129,41 @@ func Check(env *env.MysqlCfg) (*Status, error) {
 		return status, err
 	}
 
-	sqlPingSuccess, err := sqlPing(sqlX)
+	offline, err := db.ping()
 	if err != nil {
 		status.Offline = true
 		status.Error = err.Error()
 		return status, err
 	}
 
-	syncedLocalState, err := getWsrepLocalState(sqlX)
+	synced, err := db.isSynced()
 	if err != nil {
 		status.Error = err.Error()
 		return status, err
 	}
-	status.Synced = syncedLocalState
-	status.Offline = sqlPingSuccess
+
+	readonly, err := db.isReadOnly()
+	if err != nil {
+		status.Error = err.Error()
+		return status, err
+	}
+
+	donor, err := db.isDonor()
+	if err != nil {
+		status.Error = err.Error()
+		return status, err
+	}
+	// If either overrides for readonly or donor are set, take the node offline
+	if !c.ReadOnlyIsAvailable && readonly {
+		offline = true
+	} else if !c.DonorIsAvailable && donor {
+		offline = true
+	}
+
+	status.Synced = synced
+	status.Offline = offline
+	status.ReadOnly = readonly
+	status.Donor = donor
 	status.Error = "None"
 	return status, err
 }

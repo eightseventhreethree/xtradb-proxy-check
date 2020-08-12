@@ -24,10 +24,10 @@ type APICfg struct {
 // Get returns EnvCfg with environment config
 func Get() (*MysqlCfg, *APICfg) {
 	vcfg := viper.New()
-	vcfg.SetEnvPrefix("CLUSTERCHK")
+	vcfg.SetEnvPrefix("CLUSTERCHECK")
 	vcfg.AutomaticEnv()
 	vcfg.SetDefault("mysql_username", "clustercheckuser")
-	vcfg.SetDefault("mysql_password", "clustercheckpassword123")
+	vcfg.SetDefault("mysql_password", "clustercheckpassword!")
 	vcfg.SetDefault("mysql_hostname", "127.0.0.1")
 	vcfg.SetDefault("mysql_port", 3306)
 	vcfg.SetDefault("api_port", 9200)

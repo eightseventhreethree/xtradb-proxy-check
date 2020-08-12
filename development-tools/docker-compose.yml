@@ -1,0 +1,10 @@
+version: '2'
+services:
+    percona-xtradb-cluster:
+        container_name: pxc_node
+        image: 'percona/percona-xtradb-cluster:5.7'
+        environment:
+            - MYSQL_ROOT_PASSWORD=root
+            - CLUSTER_NAME=pxc-cluster
+            - XTRABACKUP_PASSWORD=xtrabackup-password1
+        network_mode: host

@@ -19,6 +19,9 @@ clean:
 vendor:
 	$(GOCMD) mod vendor
 
+run:
+	$(GOCMD) run main.go
+
 # Cross compilation
 build-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(BUILD_BASE)$(BINARY_UNIX) -v

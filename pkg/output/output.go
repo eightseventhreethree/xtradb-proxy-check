@@ -6,6 +6,7 @@ type Responses struct {
 	ReadOnly   string
 	Synced     string
 	Unsynced   string
+	Donor      string
 	Error      string
 	FullStatus string
 }
@@ -18,8 +19,9 @@ func Messages() *Responses {
 		ReadOnly: baseMsg + "read-only.\n",
 		Synced:   baseMsg + "synced.\n",
 		Unsynced: baseMsg + "not synced.\n",
+		Donor:    baseMsg + "a donor.\n",
 		Error: baseMsg + "unavailable OR in unknown state.\n" +
 			"Verify connectivity and review logs.\n",
-		FullStatus: "Offline: %t\nSynced: %t\nRead-Only: %t\nError: %s\n",
+		FullStatus: "Offline: %t\nSynced: %t\nRead-Only: %t\nDonor: %t\nError: %s\n",
 	}
 }

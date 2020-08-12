@@ -6,16 +6,37 @@ import (
 	"gclustercheck/pkg/nodestate"
 	output "gclustercheck/pkg/output"
 	"log"
+	"time"
 
 	air "github.com/aofei/air"
 )
 
+// XtraDBClient embed nodestate.Client
+type XtraDBClient struct {
+	*nodestate.Cfg
+}
+
 // Init api for requests
 func Init() {
-	_, apienv := env.Get()
+	mysqlenv, apienv := env.Get()
+	xtradb := XtraDBClient{
+		&nodestate.Cfg{
+			MysqlHostname:       mysqlenv.MysqlHostname,
+			MysqlUsername:       mysqlenv.MysqlUsername,
+			MysqlPassword:       mysqlenv.MysqlPassword,
+			MysqlPort:           mysqlenv.MysqlPort,
+			ReadOnlyIsAvailable: apienv.AvailableWhenReadOnly,
+			DonorIsAvailable:    apienv.AvailableWhenDonor,
+		},
+	}
 	air.Default.Address = fmt.Sprintf("0.0.0.0:%v", apienv.APIPort)
 	air.Default.AppName = "gclustercheck"
-	air.Default.GET("/", clustercheckHandler)
+	air.Default.GET("/", xtradb.clustercheck)
+}
+
+func executionTime(start time.Time, functionName string) {
+	elapsedTime := time.Since(start)
+	log.Printf("%s took %s", functionName, elapsedTime)
 }
 
 func online(res *air.Response, response string, fullstatus string) error {
@@ -32,18 +53,29 @@ func offline(res *air.Response, response string, fullstatus string) error {
 	return res.WriteString(fullResp)
 }
 
-func clustercheckHandler(req *air.Request, res *air.Response) error {
+func (xtradb *XtraDBClient) clustercheck(req *air.Request, res *air.Response) error {
+	defer executionTime(time.Now(), "clustercheck")
 	responses := output.Messages()
-	mysqlenv, _ := env.Get()
-	sqlStates, err := nodestate.Check(mysqlenv)
-	fullStatusMsg := fmt.Sprintf(responses.FullStatus, sqlStates.Offline, sqlStates.Synced, sqlStates.ReadOnly, sqlStates.Error)
+	sqlStates, err := xtradb.Check()
+	fullStatusMsg := fmt.Sprintf(responses.FullStatus, sqlStates.Offline, sqlStates.Synced, sqlStates.ReadOnly, sqlStates.Donor, sqlStates.Error)
 	if err != nil {
+		log.Printf("err = %s", err)
 		offline(res, responses.Error, fullStatusMsg)
 	}
 	if sqlStates.Synced && !sqlStates.Offline {
-		online(res, responses.Synced, fullStatusMsg)
+		if sqlStates.ReadOnly {
+			online(res, responses.ReadOnly, fullStatusMsg)
+		} else {
+			online(res, responses.Synced, fullStatusMsg)
+		}
 	} else {
-		offline(res, responses.Unsynced, fullStatusMsg)
+		if sqlStates.Donor {
+			offline(res, responses.Donor, fullStatusMsg)
+		} else if sqlStates.ReadOnly {
+			offline(res, responses.ReadOnly, fullStatusMsg)
+		} else {
+			offline(res, responses.Error, fullStatusMsg)
+		}
 	}
 	return nil
 }
