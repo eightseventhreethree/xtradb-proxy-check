@@ -15,12 +15,27 @@ GRANT PROCESS ON *.* TO 'clustercheckuser'@'127.0.0.1' IDENTIFIED BY 'clusterche
 
 ## Build:
 ```
-make build
+$ make build
+```
+
+## Build Docker container:
+```
+$ make build-container
 ```
 
 ## Run:
 ```
-make run
+$ make run
+```
+
+## Run Docker container:
+```
+$ docker run -p 9200:9200 xtradb-proxy-check:0.0.1-alpha
+
+# Overriding environment variables:
+$ docker run --env CLUSTERCHECK_MYSQL_USERNAME='clustercheckuser2' \
+  --env CLUSTERCHECK_MYSQL_PASSWORD='clustercheckpassword2!' \
+  -p 9200:9200 xtradb-proxy-check:0.0.1-alpha
 ```
 
 ## Available Overrides:
