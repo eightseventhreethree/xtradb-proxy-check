@@ -9,7 +9,6 @@ import (
 	"strconv"
 
 	"github.com/tdewolff/parse/v2"
-	"github.com/tdewolff/parse/v2/buffer"
 )
 
 // TokenType determines the type of token, eg. a number or a semicolon.
@@ -138,29 +137,19 @@ func (tt TokenType) String() string {
 
 // Lexer is the state for the lexer.
 type Lexer struct {
-	r *buffer.Lexer
+	r *parse.Input
 }
 
 // NewLexer returns a new Lexer for a given io.Reader.
-func NewLexer(r io.Reader) *Lexer {
+func NewLexer(r *parse.Input) *Lexer {
 	return &Lexer{
-		buffer.NewLexer(r),
+		r: r,
 	}
 }
 
 // Err returns the error encountered during lexing, this is often io.EOF but also other errors can be returned.
 func (l *Lexer) Err() error {
 	return l.r.Err()
-}
-
-// Restore restores the NULL byte at the end of the buffer.
-func (l *Lexer) Restore() {
-	l.r.Restore()
-}
-
-// Offset returns the current position in the input stream.
-func (l *Lexer) Offset() int {
-	return l.r.Offset()
 }
 
 // Next returns the next Token. It returns ErrorToken when an error was encountered. Using Err() one can retrieve the error message.
@@ -493,48 +482,40 @@ func (l *Lexer) consumeUnicodeRangeToken() bool {
 	}
 	mark := l.r.Pos()
 	l.r.Move(2)
-	if l.consumeHexDigit() {
-		// consume up to 6 hexDigits
-		k := 1
-		for ; k < 6; k++ {
-			if !l.consumeHexDigit() {
-				break
-			}
+
+	// consume up to 6 hexDigits
+	k := 0
+	for l.consumeHexDigit() {
+		k++
+	}
+
+	// either a minus or a question mark or the end is expected
+	if l.consumeByte('-') {
+		if k == 0 || 6 < k {
+			l.r.Rewind(mark)
+			return false
 		}
 
-		// either a minus or a question mark or the end is expected
-		if l.consumeByte('-') {
-			// consume another up to 6 hexDigits
-			if l.consumeHexDigit() {
-				for k := 1; k < 6; k++ {
-					if !l.consumeHexDigit() {
-						break
-					}
-				}
-			} else {
-				l.r.Rewind(mark)
-				return false
+		// consume another up to 6 hexDigits
+		if l.consumeHexDigit() {
+			k = 1
+			for l.consumeHexDigit() {
+				k++
 			}
 		} else {
-			// could be filled up to 6 characters with question marks or else regular hexDigits
-			if l.consumeByte('?') {
-				k++
-				for ; k < 6; k++ {
-					if !l.consumeByte('?') {
-						l.r.Rewind(mark)
-						return false
-					}
-				}
-			}
+			l.r.Rewind(mark)
+			return false
 		}
-	} else {
-		// consume 6 question marks
-		for k := 0; k < 6; k++ {
-			if !l.consumeByte('?') {
-				l.r.Rewind(mark)
-				return false
-			}
+	} else if l.consumeByte('?') {
+		// could be filled up to 6 characters with question marks or else regular hexDigits
+		k++
+		for l.consumeByte('?') {
+			k++
 		}
+	}
+	if k == 0 || 6 < k {
+		l.r.Rewind(mark)
+		return false
 	}
 	return true
 }

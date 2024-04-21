@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
+	"github.com/pelletier/go-toml"
 	"golang.org/x/text/language"
 )
 
@@ -45,11 +45,6 @@ func (i *i18n) load() {
 		}
 
 		go func() {
-			done := make(chan struct{})
-			i.a.AddShutdownJob(func() {
-				close(done)
-			})
-
 			for {
 				select {
 				case <-i.watcher.Events:
@@ -59,7 +54,7 @@ func (i *i18n) load() {
 						"air: i18n watcher error: %v",
 						err,
 					)
-				case <-done:
+				case <-i.a.context.Done():
 					return
 				}
 			}
@@ -98,7 +93,11 @@ func (i *i18n) load() {
 
 		n := filepath.Join(lr, fi.Name())
 		l := map[string]string{}
-		if _, i.loadError = toml.DecodeFile(n, &l); i.loadError != nil {
+
+		var tt *toml.Tree
+		if tt, i.loadError = toml.LoadFile(n); i.loadError != nil {
+			return
+		} else if i.loadError = tt.Unmarshal(&l); i.loadError != nil {
 			return
 		} else if i.loadError = i.watcher.Add(n); i.loadError != nil {
 			return

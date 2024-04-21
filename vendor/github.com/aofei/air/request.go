@@ -3,7 +3,6 @@ package air
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -103,10 +102,34 @@ type Request struct {
 	params               []*RequestParam
 	routeParamNames      []string
 	routeParamValues     []string
-	parseRouteParamsOnce *sync.Once
-	parseOtherParamsOnce *sync.Once
+	parseRouteParamsOnce sync.Once
+	parseOtherParamsOnce sync.Once
 	values               map[string]interface{}
 	localizedString      func(string) string
+}
+
+// reset resets the r with the a, hr and res.
+func (r *Request) reset(a *Air, hr *http.Request, res *Response) {
+	r.Air = a
+	r.res = res
+	r.params = r.params[:0]
+	r.routeParamNames = nil
+	r.routeParamValues = nil
+	r.parseRouteParamsOnce = sync.Once{}
+	r.parseOtherParamsOnce = sync.Once{}
+	for key := range r.values {
+		delete(r.values, key)
+	}
+
+	r.localizedString = nil
+
+	hr.Body = &requestBody{
+		r:  r,
+		hr: hr,
+		rc: hr.Body,
+	}
+
+	r.SetHTTPRequest(hr)
 }
 
 // HTTPRequest returns the underlying `http.Request` of the r.
@@ -271,6 +294,12 @@ func (r *Request) Param(name string) *RequestParam {
 	}
 
 	return nil
+}
+
+// ParamValue returns the first value of the matched `RequestParam` for the
+// name. It returns nil if not found or there are no values.
+func (r *Request) ParamValue(name string) *RequestParamValue {
+	return r.Param(name).Value()
 }
 
 // parseRouteParams parses the route params sent with the r into the `r.params`.
@@ -469,7 +498,7 @@ func (r *Request) Bind(v interface{}) error {
 	return r.Air.binder.bind(v, r)
 }
 
-// LocalizedString returns localized string for the key based on the
+// LocalizedString returns a localized string for the key based on the
 // Accept-Language header. It returns the key without any changes if the
 // `I18nEnabled` of the `Air` of the r is false or something goes wrong.
 func (r *Request) LocalizedString(key string) string {
@@ -486,20 +515,20 @@ func (r *Request) LocalizedString(key string) string {
 
 // RequestParam is an HTTP request param.
 //
-// The param may come from the route params, the request query, the request
-// form and the request multipart form.
+// The param may come from the route params, request query, request form and
+// request multipart form.
 type RequestParam struct {
 	// Name is the name.
 	Name string
 
 	// Values is the values.
 	//
-	// Access order: route param value (always at the first) > request query
-	// value(s) > request form value(s) > request multipart form value(s) >
-	// request multipart form file(s).
+	// Access order: route param value > request query value(s) > request
+	// form value(s) > request multipart form value(s) > request multipart
+	// form file(s).
 	//
 	// Note that there will always be at least one value when the request
-	// param is from the `Request.Param` or the `Request.Params`.
+	// param is from the `Request.Param` or `Request.Params`.
 	Values []*RequestParamValue
 }
 
@@ -515,9 +544,9 @@ func (rp *RequestParam) Value() *RequestParamValue {
 
 // RequestParamValue is an HTTP request param value.
 //
-// The `RequestParamValue` may represent a route param value, a request query
-// value, a request form value, a request multipart form value or a request
-// multipart form file value.
+// The `RequestParamValue` may represent a route param value, request query
+// value, request form value, request multipart form value or request multipart
+// form file value.
 type RequestParamValue struct {
 	i    interface{}
 	b    *bool
@@ -714,15 +743,21 @@ func (rpv *RequestParamValue) Float64() (float64, error) {
 // if the rpv is not text-based.
 func (rpv *RequestParamValue) String() string {
 	if rpv.s == nil {
-		if s, ok := rpv.i.(string); ok {
-			rpv.s = &s
-		} else {
-			s := fmt.Sprint(rpv.i)
-			rpv.s = &s
-		}
+		s, _ := rpv.i.(string)
+		rpv.s = &s
 	}
 
 	return *rpv.s
+}
+
+// Bytes returns a `[]byte` from the underlying value of the rpv. It returns nil
+// if the rpv is not text-based.
+func (rpv *RequestParamValue) Bytes() []byte {
+	if s := rpv.String(); s != "" {
+		return []byte(s)
+	}
+
+	return nil
 }
 
 // File returns a `multipart.FileHeader` from the underlying value of the rpv.
@@ -788,8 +823,9 @@ func (rb *requestBody) Read(b []byte) (n int, err error) {
 	if errors.Is(err, io.EOF) {
 		rb.sawEOF = true
 
-		tns := strings.Split(rb.r.Header.Get("Trailer"), ", ")
+		tns := strings.Split(rb.r.Header.Get("Trailer"), ",")
 		for _, tn := range tns {
+			tn = strings.TrimSpace(tn)
 			rb.r.Header[tn] = rb.hr.Trailer[tn]
 		}
 

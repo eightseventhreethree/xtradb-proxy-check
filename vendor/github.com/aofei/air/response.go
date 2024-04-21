@@ -26,10 +26,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/aofei/mimesniffer"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gorilla/websocket"
+	"github.com/pelletier/go-toml"
 	"github.com/vmihailenco/msgpack/v5"
 	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/http2"
@@ -97,6 +97,70 @@ type Response struct {
 	servingContent    bool
 	serveContentError error
 	deferredFuncs     []func()
+}
+
+// reset resets the r with the a, hrw and req.
+func (r *Response) reset(a *Air, hrw http.ResponseWriter, req *Request) {
+	r.Air = a
+	r.Status = http.StatusOK
+	r.ContentLength = -1
+	r.Written = false
+	r.Minified = false
+	r.Gzipped = false
+	r.req = req
+	r.servingContent = false
+	r.serveContentError = nil
+	r.deferredFuncs = r.deferredFuncs[:0]
+
+	rw := &responseWriter{
+		r:   r,
+		hrw: hrw,
+	}
+
+	hijacker, isHijacker := hrw.(http.Hijacker)
+	pusher, isPusher := hrw.(http.Pusher)
+	switch {
+	case isHijacker && isPusher:
+		r.SetHTTPResponseWriter(&struct {
+			http.ResponseWriter
+			http.Flusher
+			http.Hijacker
+			http.Pusher
+		}{
+			rw,
+			rw,
+			&responseHijacker{
+				r: r,
+				h: hijacker,
+			},
+			pusher,
+		})
+	case isHijacker:
+		r.SetHTTPResponseWriter(&struct {
+			http.ResponseWriter
+			http.Flusher
+			http.Hijacker
+		}{
+			rw,
+			rw,
+			&responseHijacker{
+				r: r,
+				h: hijacker,
+			},
+		})
+	case isPusher:
+		r.SetHTTPResponseWriter(&struct {
+			http.ResponseWriter
+			http.Flusher
+			http.Pusher
+		}{
+			rw,
+			rw,
+			pusher,
+		})
+	default:
+		r.SetHTTPResponseWriter(rw)
+	}
 }
 
 // HTTPResponseWriter returns the underlying `http.ResponseWriter` of the r.
@@ -181,6 +245,7 @@ func (r *Response) Write(content io.ReadSeeker) error {
 			}
 
 			content = bytes.NewReader(b)
+
 			r.Minified = true
 			defer func() {
 				if !r.Written {
@@ -316,27 +381,27 @@ func (r *Response) WriteMsgpack(v interface{}) error {
 // WriteTOML writes an "application/toml" content encoded from the v to the
 // client.
 func (r *Response) WriteTOML(v interface{}) error {
-	buf := bytes.Buffer{}
-	if err := toml.NewEncoder(&buf).Encode(v); err != nil {
+	b, err := toml.Marshal(v)
+	if err != nil {
 		return err
 	}
 
 	r.Header.Set("Content-Type", "application/toml; charset=utf-8")
 
-	return r.Write(bytes.NewReader(buf.Bytes()))
+	return r.Write(bytes.NewReader(b))
 }
 
 // WriteYAML writes an "application/yaml" content encoded from the v to the
 // client.
 func (r *Response) WriteYAML(v interface{}) error {
-	buf := bytes.Buffer{}
-	if err := yaml.NewEncoder(&buf).Encode(v); err != nil {
+	b, err := yaml.Marshal(v)
+	if err != nil {
 		return err
 	}
 
 	r.Header.Set("Content-Type", "application/yaml; charset=utf-8")
 
-	return r.Write(bytes.NewReader(buf.Bytes()))
+	return r.Write(bytes.NewReader(b))
 }
 
 // WriteFile writes a file content targeted by the filename to the client.
@@ -374,15 +439,23 @@ func (r *Response) WriteFile(filename string) error {
 			return err
 		} else if a != nil {
 			r.Minified = a.minified
+			defer func() {
+				if !r.Written {
+					r.Minified = false
+				}
+			}()
 
 			var ac []byte
-			if r.Air.GzipEnabled && a.gzippedDigest != nil &&
-				r.gzippable() {
-				if ac = a.content(true); ac != nil {
-					r.Gzipped = true
-				}
-			} else {
+			if !r.Air.GzipEnabled || a.gzippedDigest == nil ||
+				!r.gzippable() {
 				ac = a.content(false)
+			} else if ac = a.content(true); ac != nil {
+				r.Gzipped = true
+				defer func() {
+					if !r.Written {
+						r.Gzipped = false
+					}
+				}()
 			}
 
 			if ac != nil {
@@ -418,7 +491,7 @@ func (r *Response) WriteFile(filename string) error {
 		r.Header.Set("Content-Type", ct)
 	}
 
-	if r.Header.Get("ETag") == "" {
+	if !r.omittableHeader("ETag") && r.Header.Get("ETag") == "" {
 		if et == nil {
 			h := xxhash.New()
 			if _, err := io.Copy(h, c); err != nil {
@@ -438,7 +511,8 @@ func (r *Response) WriteFile(filename string) error {
 		))
 	}
 
-	if r.Header.Get("Last-Modified") == "" {
+	if !r.omittableHeader("Last-Modified") &&
+		r.Header.Get("Last-Modified") == "" {
 		r.Header.Set("Last-Modified", mt.UTC().Format(http.TimeFormat))
 	}
 
@@ -476,7 +550,7 @@ func (r *Response) Render(m map[string]interface{}, templates ...string) error {
 // redirection status.
 func (r *Response) Redirect(url string) error {
 	if r.Written {
-		return errors.New("air: request has been written")
+		return errors.New("air: response has already been written")
 	}
 
 	if r.Status < http.StatusMultipleChoices ||
@@ -523,7 +597,7 @@ func (r *Response) Push(target string, pos *http.PushOptions) error {
 // 6455.
 func (r *Response) WebSocket() (*WebSocket, error) {
 	if r.Written {
-		return nil, errors.New("air: request has been written")
+		return nil, errors.New("air: response has already been written")
 	}
 
 	r.Status = http.StatusSwitchingProtocols
@@ -609,7 +683,7 @@ func (r *Response) WebSocket() (*WebSocket, error) {
 // "grpc" or "grpcs".
 func (r *Response) ProxyPass(target string, rp *ReverseProxy) error {
 	if r.Written {
-		return errors.New("air: request has been written")
+		return errors.New("air: response has already been written")
 	}
 
 	if rp == nil {
@@ -716,8 +790,8 @@ func (r *Response) ProxyPass(target string, rp *ReverseProxy) error {
 			// version of Air has fixed this bug.
 			req.Host = ""
 		},
-		FlushInterval: 100 * time.Millisecond,
-		Transport:     r.Air.reverseProxyTransport,
+		Transport:     rp.Transport,
+		FlushInterval: rp.FlushInterval,
 		ErrorLog:      r.Air.ErrorLogger,
 		BufferPool:    r.Air.reverseProxyBufferPool,
 		ModifyResponse: func(res *http.Response) error {
@@ -748,6 +822,7 @@ func (r *Response) ProxyPass(target string, rp *ReverseProxy) error {
 				res.Body = b
 			}
 
+			r.Status = res.StatusCode
 			r.Gzipped = httpguts.HeaderValuesContainsToken(
 				res.Header["Content-Encoding"],
 				"gzip",
@@ -764,16 +839,16 @@ func (r *Response) ProxyPass(target string, rp *ReverseProxy) error {
 				r.Status = http.StatusBadGateway
 			}
 
+			if !r.Written {
+				r.Gzipped = false
+			}
+
 			reverseProxyError = err
 		},
 	}
-	switch targetURL.Scheme {
-	case "grpc", "grpcs":
-		hrp.FlushInterval /= 100 // For gRPC streaming
-	}
 
-	if rp.Transport != nil {
-		hrp.Transport = rp.Transport
+	if hrp.Transport == nil {
+		hrp.Transport = r.Air.reverseProxyTransport
 	}
 
 	defer func() {
@@ -784,11 +859,6 @@ func (r *Response) ProxyPass(target string, rp *ReverseProxy) error {
 
 		panic(r)
 	}()
-
-	switch targetURL.Scheme {
-	case "ws", "wss":
-		r.Status = http.StatusSwitchingProtocols
-	}
 
 	hrp.ServeHTTP(r.hrw, r.req.HTTPRequest())
 
@@ -801,6 +871,12 @@ func (r *Response) Defer(f func()) {
 	if f != nil {
 		r.deferredFuncs = append(r.deferredFuncs, f)
 	}
+}
+
+// omittableHeader reports whether the header targeted by the key is omittable.
+func (r *Response) omittableHeader(key string) bool {
+	vs, ok := r.Header[http.CanonicalHeaderKey(key)]
+	return ok && vs == nil
 }
 
 // gzippable reports whether the r is gzippable.
@@ -829,6 +905,18 @@ type ReverseProxy struct {
 	// and well-improved one will be used. If the `Transport` is not nil, it
 	// is responsible for keeping the `Response.ProxyPass` working properly.
 	Transport http.RoundTripper
+
+	// FlushInterval is the flush interval to flush to the client while
+	// copying the body of the response from the target.
+	//
+	// If the `FlushInterval` is zero, no periodic flushing is done.
+	//
+	// If the `FlushInterval` is negative, copies are flushed to the client
+	// immediately.
+	//
+	// The `FlushInterval` will always be treated as negative when the
+	// response from the target is recognized as a streaming response.
+	FlushInterval time.Duration
 
 	// ModifyRequestMethod modifies the method of the request to the target.
 	ModifyRequestMethod func(method string) (string, error)
@@ -870,15 +958,15 @@ type ReverseProxy struct {
 type responseWriter struct {
 	sync.Mutex
 
-	r  *Response
-	rw http.ResponseWriter
-	w  *countWriter
-	gw *gzip.Writer
+	r   *Response
+	hrw http.ResponseWriter
+	cw  *countWriter
+	gw  *gzip.Writer
 }
 
 // Header implements the `http.ResponseWriter`.
 func (rw *responseWriter) Header() http.Header {
-	return rw.rw.Header()
+	return rw.hrw.Header()
 }
 
 // WriteHeader implements the `http.ResponseWriter`.
@@ -901,13 +989,13 @@ func (rw *responseWriter) WriteHeader(status int) {
 		}
 	}
 
-	rw.w = &countWriter{
-		w: rw.rw,
+	rw.cw = &countWriter{
+		w: rw.hrw,
 		c: &rw.r.ContentLength,
 	}
 
 	rw.handleGzip()
-	rw.rw.WriteHeader(status)
+	rw.hrw.WriteHeader(status)
 
 	rw.r.Status = status
 	rw.r.ContentLength = 0
@@ -928,7 +1016,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 		return 0, nil
 	}
 
-	w := io.Writer(rw.w)
+	w := io.Writer(rw.cw)
 	if rw.gw != nil {
 		w = rw.gw
 	}
@@ -942,7 +1030,7 @@ func (rw *responseWriter) Flush() {
 		rw.gw.Flush()
 	}
 
-	if flusher, ok := rw.rw.(http.Flusher); ok {
+	if flusher, ok := rw.hrw.(http.Flusher); ok {
 		flusher.Flush()
 	}
 }
@@ -974,7 +1062,7 @@ func (rw *responseWriter) handleGzip() {
 				return
 			}
 
-			rw.gw.Reset(rw.w)
+			rw.gw.Reset(rw.cw)
 			rw.r.Defer(func() {
 				if rw.r.ContentLength == 0 {
 					rw.gw.Reset(ioutil.Discard)
@@ -1129,14 +1217,14 @@ func (rpt *reverseProxyTransport) RoundTrip(
 
 // reverseProxyBufferPool is a buffer pool for the reverse proxy.
 type reverseProxyBufferPool struct {
-	pool *sync.Pool
+	pool sync.Pool
 }
 
 // newReverseProxyBufferPool returns a new instance of the
 // `reverseProxyBufferPool`.
 func newReverseProxyBufferPool() *reverseProxyBufferPool {
 	return &reverseProxyBufferPool{
-		pool: &sync.Pool{
+		pool: sync.Pool{
 			New: func() interface{} {
 				return make([]byte, 32<<20)
 			},

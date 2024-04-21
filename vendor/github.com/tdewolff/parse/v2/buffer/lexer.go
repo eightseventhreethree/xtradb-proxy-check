@@ -18,7 +18,7 @@ type Lexer struct {
 	restore func()
 }
 
-// NewLexerBytes returns a new Lexer for a given io.Reader, and uses ioutil.ReadAll to read it into a byte slice.
+// NewLexer returns a new Lexer for a given io.Reader, and uses ioutil.ReadAll to read it into a byte slice.
 // If the io.Reader implements Bytes, that is used instead.
 // It will append a NULL at the end of the buffer.
 func NewLexer(r io.Reader) *Lexer {
@@ -155,4 +155,10 @@ func (z *Lexer) Offset() int {
 // Bytes returns the underlying buffer.
 func (z *Lexer) Bytes() []byte {
 	return z.buf[: len(z.buf)-1 : len(z.buf)-1]
+}
+
+// Reset resets position to the underlying buffer.
+func (z *Lexer) Reset() {
+	z.start = 0
+	z.pos = 0
 }
