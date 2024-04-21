@@ -4,11 +4,12 @@ go 1.22
 
 require (
 	github.com/aofei/air v0.19.0
-	github.com/go-sql-driver/mysql v1.5.0
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/spf13/viper v1.18.2
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/BurntSushi/toml v0.3.1 // indirect
 	github.com/VictoriaMetrics/fastcache v1.5.7 // indirect
 	github.com/aofei/mimesniffer v1.1.4 // indirect
