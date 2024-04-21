@@ -16,27 +16,26 @@ import (
 // minifier is a minifier that minifies contents based on the MIME types.
 type minifier struct {
 	a        *Air
-	loadOnce *sync.Once
+	loadOnce sync.Once
 	minifier *minify.M
 }
 
 // newMinifier returns a new instance of the `minifier` with the a.
 func newMinifier(a *Air) *minifier {
 	return &minifier{
-		a:        a,
-		loadOnce: &sync.Once{},
+		a: a,
 	}
 }
 
 // load loads the stuff of the m up.
 func (m *minifier) load() {
 	m.minifier = minify.New()
-	m.minifier.Add("text/html", html.DefaultMinifier)
-	m.minifier.Add("text/css", css.DefaultMinifier)
-	m.minifier.Add("application/javascript", js.DefaultMinifier)
-	m.minifier.Add("application/json", json.DefaultMinifier)
-	m.minifier.Add("application/xml", xml.DefaultMinifier)
-	m.minifier.Add("image/svg+xml", svg.DefaultMinifier)
+	m.minifier.Add("text/html", &html.Minifier{})
+	m.minifier.Add("text/css", &css.Minifier{})
+	m.minifier.Add("application/javascript", &js.Minifier{})
+	m.minifier.Add("application/json", &json.Minifier{})
+	m.minifier.Add("application/xml", &xml.Minifier{})
+	m.minifier.Add("image/svg+xml", &svg.Minifier{})
 }
 
 // minify minifies the b based on the mimeType.

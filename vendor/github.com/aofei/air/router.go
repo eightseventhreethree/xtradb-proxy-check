@@ -1,7 +1,6 @@
 package air
 
 import (
-	"net/url"
 	ppath "path"
 	"strings"
 	"sync"
@@ -15,7 +14,7 @@ type router struct {
 	routeTree            *routeNode
 	registeredRoutes     map[string]bool
 	maxRouteParams       int
-	routeParamValuesPool *sync.Pool
+	routeParamValuesPool sync.Pool
 }
 
 // newRouter returns a new instance of the `router` with the a.
@@ -27,10 +26,9 @@ func newRouter(a *Air) *router {
 		},
 		registeredRoutes: map[string]bool{},
 	}
-	r.routeParamValuesPool = &sync.Pool{
-		New: func() interface{} {
-			return make([]string, r.maxRouteParams)
-		},
+
+	r.routeParamValuesPool.New = func() interface{} {
+		return make([]string, r.maxRouteParams)
 	}
 
 	return r
@@ -51,9 +49,6 @@ func (r *router) register(method, path string, h Handler, gases ...Gas) {
 	hasTrailingSlash := path[len(path)-1] == '/'
 
 	path = ppath.Clean(path)
-	path = url.PathEscape(path)
-	path = strings.ReplaceAll(path, "%2F", "/")
-	path = strings.ReplaceAll(path, "%2A", "*")
 	if hasTrailingSlash && path != "/" {
 		path += "/"
 	}

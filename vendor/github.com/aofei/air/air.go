@@ -62,8 +62,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/mitchellh/mapstructure"
+	"github.com/pelletier/go-toml"
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
@@ -245,14 +245,6 @@ type Air struct {
 	// Default value: "acme-certs"
 	ACMECertRoot string `mapstructure:"acme_cert_root"`
 
-	// ACMEDefaultHost is the default host of the ACME feature.
-	//
-	// The `ACMEDefaultHost` is only used when the host is missing from the
-	// TLS handshake.
-	//
-	// Default value: ""
-	ACMEDefaultHost string `mapstructure:"acme_default_host"`
-
 	// ACMEHostWhitelist is the list of hosts allowed by the ACME feature.
 	//
 	// It is highly recommended to set the `ACMEHostWhitelist`. If the
@@ -424,6 +416,25 @@ type Air struct {
 	// RendererTemplateFuncMap is the HTML template function map of the
 	// renderer feature.
 	//
+	// The HTML template functions described in
+	// https://pkg.go.dev/text/template#hdr-Functions and the following are
+	// always available:
+	//  * locstr
+	//      Returns a localized string for its argument. It works exactly
+	//      the same as the `Request.LocalizedString`
+	//  * str2html
+	//      Returns a `template.HTML` for its argument.
+	//  * strlen
+	//      Returns the number of characters of its argument.
+	//  * substr
+	//      Returns the substring consisting of the characters of its first
+	//      argument starting at a start index (the second argument) and
+	//      continuing up to, but not including, the character at an end
+	//      index (the third argument).
+	//  * timefmt
+	//      Returns a textual representation of its first argument for the
+	//      time layout (the second argument).
+	//
 	// Default value: nil
 	RendererTemplateFuncMap template.FuncMap `mapstructure:"-"`
 
@@ -556,14 +567,16 @@ type Air struct {
 	coffer   *coffer
 	i18n     *i18n
 
+	context                      context.Context
+	contextCancel                context.CancelFunc
 	addressMap                   map[string]int
 	shutdownJobs                 []func()
-	shutdownJobMutex             *sync.Mutex
+	shutdownJobMutex             sync.Mutex
 	shutdownJobDone              chan struct{}
-	requestPool                  *sync.Pool
-	responsePool                 *sync.Pool
-	contentTypeSnifferBufferPool *sync.Pool
-	gzipWriterPool               *sync.Pool
+	requestPool                  sync.Pool
+	responsePool                 sync.Pool
+	contentTypeSnifferBufferPool sync.Pool
+	gzipWriterPool               sync.Pool
 	reverseProxyTransport        *reverseProxyTransport
 	reverseProxyBufferPool       *reverseProxyBufferPool
 }
@@ -644,32 +657,24 @@ func New() *Air {
 	a.coffer = newCoffer(a)
 	a.i18n = newI18n(a)
 
+	a.context, a.contextCancel = context.WithCancel(context.Background())
 	a.addressMap = map[string]int{}
-	a.shutdownJobMutex = &sync.Mutex{}
 	a.shutdownJobDone = make(chan struct{})
-	a.requestPool = &sync.Pool{
-		New: func() interface{} {
-			return &Request{}
-		},
+	a.requestPool.New = func() interface{} {
+		return &Request{}
 	}
 
-	a.responsePool = &sync.Pool{
-		New: func() interface{} {
-			return &Response{}
-		},
+	a.responsePool.New = func() interface{} {
+		return &Response{}
 	}
 
-	a.contentTypeSnifferBufferPool = &sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 512)
-		},
+	a.contentTypeSnifferBufferPool.New = func() interface{} {
+		return make([]byte, 512)
 	}
 
-	a.gzipWriterPool = &sync.Pool{
-		New: func() interface{} {
-			w, _ := gzip.NewWriterLevel(nil, a.GzipCompressionLevel)
-			return w
-		},
+	a.gzipWriterPool.New = func() interface{} {
+		w, _ := gzip.NewWriterLevel(nil, a.GzipCompressionLevel)
+		return w
 	}
 
 	a.reverseProxyTransport = newReverseProxyTransport()
@@ -1037,10 +1042,6 @@ func (a *Air) Serve() error {
 				}
 			}
 
-			if chi.ServerName == "" {
-				chi.ServerName = a.ACMEDefaultHost
-			}
-
 			return acm.GetCertificate(chi)
 		}
 
@@ -1145,6 +1146,7 @@ func (a *Air) Serve() error {
 
 // Close closes the server of the a immediately.
 func (a *Air) Close() error {
+	defer a.contextCancel()
 	return a.server.Close()
 }
 
@@ -1166,6 +1168,8 @@ func (a *Air) Close() error {
 // connections of shutdown and wait for them to close, if desired. See the
 // `AddShutdownJob` for a way to add shutdown jobs.
 func (a *Air) Shutdown(ctx context.Context) error {
+	defer a.contextCancel()
+
 	err := a.server.Shutdown(ctx)
 	select {
 	case <-ctx.Done():
@@ -1219,95 +1223,13 @@ func (a *Air) Addresses() []string {
 
 // ServeHTTP implements the `http.Handler`.
 func (a *Air) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	// Get request from the pool.
+	// Get the request and response from the pool.
 
 	req := a.requestPool.Get().(*Request)
-	req.Air = a
-	req.params = req.params[:0]
-	req.routeParamNames = nil
-	req.routeParamValues = nil
-	req.parseRouteParamsOnce = &sync.Once{}
-	req.parseOtherParamsOnce = &sync.Once{}
-	for key := range req.values {
-		delete(req.values, key)
-	}
-
-	req.localizedString = nil
-
-	r.Body = &requestBody{
-		r:  req,
-		hr: r,
-		rc: r.Body,
-	}
-
-	req.SetHTTPRequest(r)
-
-	// Get response from the pool.
-
 	res := a.responsePool.Get().(*Response)
-	res.Air = a
-	res.Status = http.StatusOK
-	res.ContentLength = -1
-	res.Written = false
-	res.Minified = false
-	res.Gzipped = false
-	res.servingContent = false
-	res.serveContentError = nil
-	res.deferredFuncs = res.deferredFuncs[:0]
 
-	hrw := http.ResponseWriter(&responseWriter{
-		r:  res,
-		rw: rw,
-	})
-
-	hijacker, isHijacker := rw.(http.Hijacker)
-	pusher, isPusher := rw.(http.Pusher)
-	if isHijacker && isPusher {
-		hrw = http.ResponseWriter(&struct {
-			http.ResponseWriter
-			http.Flusher
-			http.Hijacker
-			http.Pusher
-		}{
-			hrw,
-			hrw.(http.Flusher),
-			&responseHijacker{
-				r: res,
-				h: hijacker,
-			},
-			pusher,
-		})
-	} else if isHijacker {
-		hrw = http.ResponseWriter(&struct {
-			http.ResponseWriter
-			http.Flusher
-			http.Hijacker
-		}{
-			hrw,
-			hrw.(http.Flusher),
-			&responseHijacker{
-				r: res,
-				h: hijacker,
-			},
-		})
-	} else if isPusher {
-		hrw = http.ResponseWriter(&struct {
-			http.ResponseWriter
-			http.Flusher
-			http.Pusher
-		}{
-			hrw,
-			hrw.(http.Flusher),
-			pusher,
-		})
-	}
-
-	res.SetHTTPResponseWriter(hrw)
-
-	// Tie the request and response together.
-
-	req.res = res
-	res.req = req
+	req.reset(a, r, res)
+	res.reset(a, rw, req)
 
 	// Chain the gases stack.
 

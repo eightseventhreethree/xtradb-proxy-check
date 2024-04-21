@@ -18,21 +18,16 @@ var (
 	isBytes       = []byte("=")
 	spaceBytes    = []byte(" ")
 	cdataEndBytes = []byte("]]>")
-	pathBytes     = []byte("<path")
-	dBytes        = []byte("d")
 	zeroBytes     = []byte("0")
 	cssMimeBytes  = []byte("text/css")
+	noneBytes     = []byte("none")
 	urlBytes      = []byte("url(")
 )
 
 ////////////////////////////////////////////////////////////////
 
-// DEPRECATED: DefaultMinifier is the default minifier.
-var DefaultMinifier = &Minifier{}
-
 // Minifier is an SVG minifier.
 type Minifier struct {
-	Decimals     int // DEPRECATED
 	Precision    int // number of significant digits
 	newPrecision int // precision for new numbers
 }
@@ -44,12 +39,6 @@ func Minify(m *minify.M, w io.Writer, r io.Reader, params map[string]string) err
 
 // Minify minifies SVG data, it reads from r and writes to w.
 func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]string) error {
-	if o.Decimals != 0 {
-		minify.Warning.Println("SVG option `Decimals` is deprecated, using as `Precision` instead. Be aware that `Decimals` meant the number of digits behind the dot while `Precision` means the number of significant digits. Example: 1.23 with `Decimals=1` would give 1.2 but with `Pecision=1` gives 1. The default `Decimals=-1` is now `Precision=0` which prints the whole number.")
-	}
-	if o.Precision == 0 {
-		o.Precision = o.Decimals
-	}
 	o.newPrecision = o.Precision
 	if o.newPrecision <= 0 || 15 < o.newPrecision {
 		o.newPrecision = 15 // minimum number of digits a double can represent exactly
@@ -64,23 +53,25 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 	minifyBuffer := buffer.NewWriter(make([]byte, 0, 64))
 	attrByteBuffer := make([]byte, 0, 64)
 
-	l := xml.NewLexer(r)
-	defer l.Restore()
+	z := parse.NewInput(r)
+	defer z.Restore()
 
-	tb := NewTokenBuffer(l)
+	l := xml.NewLexer(z)
+	tb := NewTokenBuffer(z, l)
 	for {
 		t := *tb.Shift()
 		switch t.TokenType {
 		case xml.ErrorToken:
+			if _, err := w.Write(nil); err != nil {
+				return err
+			}
 			if l.Err() == io.EOF {
 				return nil
 			}
 			return l.Err()
 		case xml.DOCTYPEToken:
 			if len(t.Text) > 0 && t.Text[len(t.Text)-1] == ']' {
-				if _, err := w.Write(t.Data); err != nil {
-					return err
-				}
+				w.Write(t.Data)
 			}
 		case xml.TextToken:
 			t.Data = parse.ReplaceMultipleWhitespaceAndEntities(t.Data, minifyXML.EntitiesMap, nil)
@@ -89,13 +80,12 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 			if tag == Style && len(t.Data) > 0 {
 				if err := m.MinifyMimetype(defaultStyleType, w, buffer.NewReader(t.Data), defaultStyleParams); err != nil {
 					if err != minify.ErrNotExist {
-						return err
-					} else if _, err := w.Write(t.Data); err != nil {
-						return err
+						return minify.UpdateErrorPosition(err, z, t.Offset)
 					}
+					w.Write(t.Data)
 				}
-			} else if _, err := w.Write(t.Data); err != nil {
-				return err
+			} else {
+				w.Write(t.Data)
 			}
 		case xml.CDATAToken:
 			if tag == Style {
@@ -105,19 +95,16 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 					t.Text = t.Data[9:]
 					t.Data = append(t.Data, cdataEndBytes...)
 				} else if err != minify.ErrNotExist {
-					return err
+					return minify.UpdateErrorPosition(err, z, t.Offset)
 				}
 			}
 			var useText bool
 			if t.Text, useText = xml.EscapeCDATAVal(&attrByteBuffer, t.Text); useText {
 				t.Text = parse.ReplaceMultipleWhitespace(t.Text)
 				t.Text = parse.TrimWhitespace(t.Text)
-
-				if _, err := w.Write(t.Text); err != nil {
-					return err
-				}
-			} else if _, err := w.Write(t.Data); err != nil {
-				return err
+				w.Write(t.Text)
+			} else {
+				w.Write(t.Data)
 			}
 		case xml.StartTagPIToken:
 			for {
@@ -135,8 +122,8 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 
 			if t.Data == nil {
 				skipTag(tb)
-			} else if _, err := w.Write(t.Data); err != nil {
-				return err
+			} else {
+				w.Write(t.Data)
 			}
 		case xml.AttributeToken:
 			if len(t.AttrVal) == 0 || t.Text == nil { // data is nil when attribute has been removed
@@ -150,27 +137,19 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 			}
 			if attr == Xml_Space && bytes.Equal(val, []byte("preserve")) ||
 				tag == Svg && (attr == Version && bytes.Equal(val, []byte("1.1")) ||
-					attr == X && bytes.Equal(val, []byte("0")) ||
-					attr == Y && bytes.Equal(val, []byte("0")) ||
-					attr == Width && bytes.Equal(val, []byte("100%")) ||
-					attr == Height && bytes.Equal(val, []byte("100%")) ||
+					attr == X && bytes.Equal(val, zeroBytes) ||
+					attr == Y && bytes.Equal(val, zeroBytes) ||
 					attr == PreserveAspectRatio && bytes.Equal(val, []byte("xMidYMid meet")) ||
-					attr == BaseProfile && bytes.Equal(val, []byte("none")) ||
+					attr == BaseProfile && bytes.Equal(val, noneBytes) ||
 					attr == ContentScriptType && bytes.Equal(val, []byte("application/ecmascript")) ||
-					attr == ContentStyleType && bytes.Equal(val, []byte("text/css"))) ||
-				tag == Style && attr == Type && bytes.Equal(val, []byte("text/css")) {
+					attr == ContentStyleType && bytes.Equal(val, cssMimeBytes)) ||
+				tag == Style && attr == Type && bytes.Equal(val, cssMimeBytes) {
 				continue
 			}
 
-			if _, err := w.Write(spaceBytes); err != nil {
-				return err
-			}
-			if _, err := w.Write(t.Text); err != nil {
-				return err
-			}
-			if _, err := w.Write(isBytes); err != nil {
-				return err
-			}
+			w.Write(spaceBytes)
+			w.Write(t.Text)
+			w.Write(isBytes)
 
 			if tag == Svg && attr == ContentStyleType {
 				val = minify.Mediatype(val)
@@ -180,7 +159,7 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 				if err := m.MinifyMimetype(defaultStyleType, minifyBuffer, buffer.NewReader(val), defaultInlineStyleParams); err == nil {
 					val = minifyBuffer.Bytes()
 				} else if err != minify.ErrNotExist {
-					return err
+					return minify.UpdateErrorPosition(err, z, t.Offset)
 				}
 			} else if attr == D {
 				val = p.ShortenPathData(val)
@@ -224,9 +203,7 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 
 			// prefer single or double quotes depending on what occurs more often in value
 			val = xml.EscapeAttrVal(&attrByteBuffer, val)
-			if _, err := w.Write(val); err != nil {
-				return err
-			}
+			w.Write(val)
 		case xml.StartTagCloseToken:
 			next := tb.Peek(0)
 			skipExtra := false
@@ -240,34 +217,24 @@ func (o *Minifier) Minify(m *minify.M, w io.Writer, r io.Reader, _ map[string]st
 				if skipExtra {
 					tb.Shift()
 				}
-				if _, err := w.Write(voidBytes); err != nil {
-					return err
-				}
+				w.Write(voidBytes)
 			} else {
-				if _, err := w.Write(t.Data); err != nil {
-					return err
-				}
+				w.Write(t.Data)
 			}
 
 			if tag == ForeignObject {
-				if err := printTag(w, tb, tag); err != nil {
-					return err
-				}
+				printTag(w, tb, tag)
 			}
 		case xml.StartTagCloseVoidToken:
 			tag = 0
-			if _, err := w.Write(t.Data); err != nil {
-				return err
-			}
+			w.Write(t.Data)
 		case xml.EndTagToken:
 			tag = 0
 			if len(t.Data) > 3+len(t.Text) {
 				t.Data[2+len(t.Text)] = '>'
 				t.Data = t.Data[:3+len(t.Text)]
 			}
-			if _, err := w.Write(t.Data); err != nil {
-				return err
-			}
+			w.Write(t.Data)
 		}
 	}
 }
@@ -307,41 +274,37 @@ func (o *Minifier) shortenRect(tb *TokenBuffer, t *Token) {
 
 ////////////////////////////////////////////////////////////////
 
-func printTag(w io.Writer, tb *TokenBuffer, tag Hash) error {
+func printTag(w io.Writer, tb *TokenBuffer, tag Hash) {
 	level := 0
+	inStartTag := false
 	for {
 		t := *tb.Peek(0)
-		if level == 0 && t.Hash == tag && (t.TokenType == xml.EndTagToken || t.TokenType == xml.StartTagCloseVoidToken) {
-			break
-		}
 		switch t.TokenType {
 		case xml.ErrorToken:
-			break
+			return
 		case xml.StartTagToken:
+			inStartTag = t.Hash == tag
 			if t.Hash == tag {
 				level++
 			}
 		case xml.StartTagCloseVoidToken:
-			if t.Hash == tag {
+			if inStartTag {
 				if level == 0 {
-					break
+					return
 				}
 				level--
 			}
 		case xml.EndTagToken:
 			if t.Hash == tag {
 				if level == 0 {
-					break
+					return
 				}
 				level--
 			}
 		}
-		if _, err := w.Write(t.Data); err != nil {
-			return err
-		}
+		w.Write(t.Data)
 		tb.Shift()
 	}
-	return nil
 }
 
 func skipTag(tb *TokenBuffer) {

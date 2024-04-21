@@ -25,7 +25,7 @@ type coffer struct {
 	loadOnce  *sync.Once
 	loadError error
 	watcher   *fsnotify.Watcher
-	assets    *sync.Map
+	assets    sync.Map
 	cache     *fastcache.Cache
 }
 
@@ -52,11 +52,6 @@ func (c *coffer) load() {
 		}
 
 		go func() {
-			done := make(chan struct{})
-			c.a.AddShutdownJob(func() {
-				close(done)
-			})
-
 			for {
 				select {
 				case e := <-c.watcher.Events:
@@ -76,14 +71,13 @@ func (c *coffer) load() {
 						"air: coffer watcher error: %v",
 						err,
 					)
-				case <-done:
+				case <-c.a.context.Done():
 					return
 				}
 			}
 		}()
 	}
 
-	c.assets = &sync.Map{}
 	c.cache = fastcache.New(c.a.CofferMaxMemoryBytes)
 }
 

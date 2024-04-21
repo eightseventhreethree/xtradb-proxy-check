@@ -1,10 +1,18 @@
 package minify
 
 import (
+	"bytes"
 	"encoding/base64"
 
 	"github.com/tdewolff/parse/v2"
 	"github.com/tdewolff/parse/v2/strconv"
+)
+
+var (
+	textMimeBytes     = []byte("text/plain")
+	charsetAsciiBytes = []byte("charset=us-ascii")
+	dataBytes         = []byte("data:")
+	base64Bytes       = []byte(";base64")
 )
 
 // Epsilon is the closest number to zero that is not considered to be zero.
@@ -46,7 +54,7 @@ func DataURI(m *M, dataURI []byte) []byte {
 	base64Len := len(";base64") + base64.StdEncoding.EncodedLen(len(data))
 	asciiLen := len(data)
 	for _, c := range data {
-		if parse.URLEncodingTable[c] {
+		if parse.DataURIEncodingTable[c] {
 			asciiLen += 2
 		}
 		if asciiLen > base64Len {
@@ -60,27 +68,30 @@ func DataURI(m *M, dataURI []byte) []byte {
 		encoded := make([]byte, base64Len-len(";base64"))
 		base64.StdEncoding.Encode(encoded, data)
 		data = encoded
-		mediatype = append(mediatype, []byte(";base64")...)
+		mediatype = append(mediatype, base64Bytes...)
 	} else {
-		data = parse.EncodeURL(data, parse.URLEncodingTable)
+		data = parse.EncodeURL(data, parse.DataURIEncodingTable)
 	}
-	if len("text/plain") <= len(mediatype) && parse.EqualFold(mediatype[:len("text/plain")], []byte("text/plain")) {
+	if len("text/plain") <= len(mediatype) && parse.EqualFold(mediatype[:len("text/plain")], textMimeBytes) {
 		mediatype = mediatype[len("text/plain"):]
 	}
 	for i := 0; i+len(";charset=us-ascii") <= len(mediatype); i++ {
 		// must start with semicolon and be followed by end of mediatype or semicolon
-		if mediatype[i] == ';' && parse.EqualFold(mediatype[i+1:i+len(";charset=us-ascii")], []byte("charset=us-ascii")) && (i+len(";charset=us-ascii") >= len(mediatype) || mediatype[i+len(";charset=us-ascii")] == ';') {
+		if mediatype[i] == ';' && parse.EqualFold(mediatype[i+1:i+len(";charset=us-ascii")], charsetAsciiBytes) && (i+len(";charset=us-ascii") >= len(mediatype) || mediatype[i+len(";charset=us-ascii")] == ';') {
 			mediatype = append(mediatype[:i], mediatype[i+len(";charset=us-ascii"):]...)
 			break
 		}
 	}
-	return append(append(append([]byte("data:"), mediatype...), ','), data...)
+	return append(append(append(dataBytes, mediatype...), ','), data...)
 }
 
+// MaxInt is the maximum value of int.
 const MaxInt = int(^uint(0) >> 1)
+
+// MinInt is the minimum value of int.
 const MinInt = -MaxInt - 1
 
-// Decimal minifies a given byte slice containing a number (see parse.Number) and removes superfluous characters.
+// Decimal minifies a given byte slice containing a decimal and removes superfluous characters. It differs from Number in that it does not parse exponents.
 // It does not parse or output exponents. prec is the number of significant digits. When prec is zero it will keep all digits. Only digits after the dot can be removed to reach the number of significant digits. Very large number may thus have more significant digits.
 func Decimal(num []byte, prec int) []byte {
 	if len(num) <= 1 {
@@ -187,7 +198,7 @@ func Decimal(num []byte, prec int) []byte {
 	return num[start:end]
 }
 
-// Number minifies a given byte slice containing a number (see parse.Number) and removes superfluous characters.
+// Number minifies a given byte slice containing a number and removes superfluous characters.
 func Number(num []byte, prec int) []byte {
 	if len(num) <= 1 {
 		return num
@@ -375,7 +386,7 @@ func Number(num []byte, prec int) []byte {
 			num[end] = '0'
 			end++
 		}
-	} else if normExp < -3 && lenNormExp < lenIntExp {
+	} else if normExp < -3 && lenNormExp < lenIntExp && dot < end {
 		// case 2: print normalized number (0.1 <= f < 1)
 		zeroes := -normExp + origExp
 		if 0 < zeroes {
@@ -490,4 +501,15 @@ func Number(num []byte, prec int) []byte {
 		num[start] = '-'
 	}
 	return num[start:end]
+}
+
+func UpdateErrorPosition(err error, input *parse.Input, offset int) error {
+	if perr, ok := err.(*parse.Error); ok {
+		r := bytes.NewBuffer(input.Bytes())
+		line, column, _ := parse.Position(r, offset)
+		perr.Line += line - 1
+		perr.Column += column - 1
+		return perr
+	}
+	return err
 }
