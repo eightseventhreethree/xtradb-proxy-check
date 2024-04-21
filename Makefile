@@ -6,13 +6,13 @@ BUILD_BASE=$(GOCMD) build -o out/
 TAG_NAME:=$(shell git describe --abbrev=0 --tags)
 
 all: test build
-build: 
+build:
 	$(BUILD_BASE)$(BINARY_NAME) -v
 
-test: 
+test:
 	$(GOCMD) test -v ./...
 
-clean: 
+clean:
 	$(GOCMD) clean
 	rm -f $(BINARY_NAME)
 	rm -f $(BINARY_LINUX)
