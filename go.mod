@@ -4,7 +4,7 @@ go 1.22
 
 require (
 	github.com/aofei/air v0.22.0
-	github.com/go-sql-driver/mysql v1.8.1
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/spf13/viper v1.19.0
 )
 
