@@ -1,15 +1,15 @@
 module gclustercheck
 
-go 1.22
+go 1.24.0
 
 require (
 	github.com/aofei/air v0.22.0
-	github.com/go-sql-driver/mysql v1.8.1
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/spf13/viper v1.19.0
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/VictoriaMetrics/fastcache v1.5.8 // indirect
 	github.com/aofei/mimesniffer v1.1.6 // indirect
 	github.com/cespare/xxhash/v2 v2.1.1 // indirect
